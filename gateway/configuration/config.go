@@ -181,6 +181,11 @@ type TargetLoadersConfig struct {
 	SimpleFile string `json:"simple_file"`
 	// SimpleFileReloadInterval is the interval to check SimpleFile for changes.
 	SimpleFileReloadInterval time.Duration `json:"simple_file_reload_interval"`
+
+	// ZookeeperPath is the path to the zNode that contains the subnodes for the target config
+	ZookeeperNode string `json:"zookeeper_node"`
+	// ZookeeperReloadInterval is the interval to check the ZookeeperNode for changes.
+	ZookeeperReloadInterval time.Duration `json:"zookeeper_reload_interval"`
 }
 
 func NewDefaultGatewayConfig() *GatewayConfig {

@@ -11,4 +11,4 @@ scrape_configs:
     metrics_path: '/metrics'
     scrape_interval: 5s
     static_configs:
-      - targets: ['gnmi-gateway-01:59100']
+      - targets: ['gnmi-gateway:59100']
