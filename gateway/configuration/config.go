@@ -52,6 +52,8 @@ type GatewayConfig struct {
 	// any changes. However, gnmi-gw can be configured to use sampled subscribe
 	// notifications. If this flag is enabled, such notifications will be emitted.
 	EmitStaleUpdates bool `json:"emit_stale_updates"`
+	// GatewayTransitionWorkerCount sets the number of workers that push metrics between targets and exporters/clients.
+	GatewayTransitionWorkerCount uint64 `json:"gateway_transition_worker_count"`
 	// GatewayTransitionBufferSize tunes the size of the buffer between targets and exporters/clients.
 	GatewayTransitionBufferSize uint64 `json:"gateway_transition_buffer_size"`
 	// Log is the logger used by the gateway code and gateway packages.

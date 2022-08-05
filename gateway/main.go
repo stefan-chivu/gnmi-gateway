@@ -112,6 +112,7 @@ func ParseArgs(config *configuration.GatewayConfig) error {
 
 	flag.StringVar(&config.Exporters.StatsdHost, "ExportersStatsdHost", "", "Statsd exporter host including port")
 
+	flag.Uint64Var(&config.GatewayTransitionWorkerCount, "GatewayTransitionWorkerCount", 100, "Sets the number of workers that push metrics between targets and exporters/clients.")
 	flag.Uint64Var(&config.GatewayTransitionBufferSize, "GatewayTransitionBufferSize", 100000, "Tunes the size of the buffer between targets and exporters/clients")
 	flag.BoolVar(&config.LogCaller, "LogCaller", false, "Include the file and line number with each log message")
 	flag.StringVar(&config.OpenConfigDirectory, "OpenConfigDirectory", "", "Directory (required to enable Prometheus exporter)")

@@ -71,7 +71,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Netflix/spectator-go"
+	"github.com/alitto/pond"
 	"github.com/go-zookeeper/zk"
 	"github.com/openconfig/gnmi/ctree"
 	"github.com/openconfig/gnmi/proto/gnmi"
@@ -114,46 +114,36 @@ type Gateway struct {
 }
 
 type CacheClient struct {
-	buffer      chan *ctree.Leaf
-	bufferGauge *spectator.Gauge
 	name        string
+	pool        *pond.WorkerPool
 	send        func(leaf *ctree.Leaf)
 	External    bool
 }
 
 // NewCacheClient creates a new cache client instance and starts the associated
 // goroutines.
-func NewCacheClient(name string, newClient func(leaf *ctree.Leaf), external bool, size uint64) *CacheClient {
-	metricTags := map[string]string{
-		"gnmigateway.transition_buffer_name": name,
-	}
+func NewCacheClient(
+	name string,
+	newClient func(leaf *ctree.Leaf),
+	external bool,
+	workerCount uint64,
+	size uint64,
+) *CacheClient {
 	c := &CacheClient{
-		buffer:      make(chan *ctree.Leaf, size),
-		bufferGauge: stats.Registry.Gauge("gnmigateway.transition_buffer_size", metricTags),
+		pool: pond.New(int(workerCount), int(size)),
 		name:        name,
 		send:        newClient,
 		External:    external,
 	}
-	go c.run()
-	go c.metrics()
+
+	// TODO: consider readding client metrics
 	return c
 }
 
-func (c *CacheClient) metrics() {
-	for {
-		time.Sleep(30 * time.Second)
-		c.bufferGauge.Set(float64(len(c.buffer)))
-	}
-}
-
-func (c *CacheClient) run() {
-	for l := range c.buffer {
-		c.send(l)
-	}
-}
-
 func (c *CacheClient) Send(leaf *ctree.Leaf) {
-	c.buffer <- leaf
+	c.pool.Submit(func() {
+		c.send(leaf)
+	})
 }
 
 // StartOpts is passed to StartGateway() and is used to set the running configuration
@@ -176,7 +166,12 @@ func NewGateway(config *configuration.GatewayConfig) *Gateway {
 func (g *Gateway) AddClient(name string, newClient func(leaf *ctree.Leaf), external bool) {
 	g.clientLock.Lock()
 	defer g.clientLock.Unlock()
-	g.clients = append(g.clients, NewCacheClient(name, newClient, external, g.config.GatewayTransitionBufferSize))
+	g.clients = append(
+		g.clients,
+		NewCacheClient(
+			name, newClient, external,
+			g.config.GatewayTransitionWorkerCount,
+			g.config.GatewayTransitionBufferSize))
 }
 
 // StartGateway starts up all of the loaders and exporters provided by StartOpts. This is the
