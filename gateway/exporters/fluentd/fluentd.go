@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -23,18 +25,20 @@ const LoggedMetricType = "loggedMetric"
 var _ exporters.Exporter = new(FluentdExporter)
 
 type LogEntry struct {
-	Namespace     string            `msg:"eventNamespace"`
-	EventName     string            `msg:"eventName"`
-	GnmiPath      string            `msg:"gnmiPath"`
-	SubscribePath string            `msg:"subscribedPath"`
-	Value         interface{}       `msg:"value"`
-	Meta          map[string]string `msg:"meta"`
-	FabricID      string            `msg:"fabricId"`
-	RackID        string            `msg:"rackId"`
-	DeviceID      string            `msg:"deviceId"`
-	ExtensionID   string            `msg:"extensionId"`
-	DeviceName    string            `msg:"deviceName"`
-	Timestamp     string            `msg:"gnmiTimestamp"`
+	Namespace     string `msg:"eventNamespace"`
+	EventName     string `msg:"eventName"`
+	GnmiPath      string `msg:"gnmiPath"`
+	SubscribePath string `msg:"subscribedPath"`
+	Value         string `msg:"value"`
+	Meta          string `msg:"meta"`
+	FabricID      string `msg:"fabricId"`
+	RackID        string `msg:"rackId"`
+	DeviceID      string `msg:"deviceId"`
+	DeviceName    string `msg:"deviceName"`
+	ExtensionID   string `msg:"extensionId"`
+	Timestamp     string `msg:"gnmiTimestamp"`
+	TenantID      string `msg:"tenantId"`
+	Location      string `msg:"location"`
 }
 
 func init() {
@@ -82,7 +86,12 @@ func (e *FluentdExporter) Export(leaf *ctree.Leaf) {
 			continue
 		}
 
-		logEntry.Value = value
+		val, isNumericValue := utils.GetNumberValues(update.Val)
+		if isNumericValue {
+			logEntry.Value = strconv.FormatInt(int64(val), 10)
+		} else if reflect.TypeOf(value) == reflect.TypeOf((*gnmipb.TypedValue_StringVal)(nil)) {
+			logEntry.Value = string(value.(*gnmipb.TypedValue_StringVal).StringVal)
+		}
 
 		elems, keys, err := extractPrefixAndPathKeys(notification.GetPrefix(), update.GetPath())
 		if err != nil {
@@ -108,10 +117,11 @@ func (e *FluentdExporter) Export(leaf *ctree.Leaf) {
 
 		logEntry.EventName = notificationPathToMetricName(subscribePath)
 
-		logEntry.Meta = keys
+		metaMap := make(map[string]string)
+		metaMap = keys
 
 		if e.connMgr != nil {
-			targetName := logEntry.Meta["target"]
+			targetName := metaMap["target"]
 			targetConfig, found := (*e.connMgr).GetTargetConfig(targetName)
 
 			if found {
@@ -120,34 +130,41 @@ func (e *FluentdExporter) Export(leaf *ctree.Leaf) {
 					logEntry.DeviceID = deviceID
 					logEntry.DeviceName = path.Base(deviceID)
 				} else {
-					e.config.Log.Error().Msg("Device ARM ID is not set in the metadata of target: " + targetName)
-					return
+					e.config.Log.Debug().Msg("device ARM ID is not set in the metadata of target: " + targetName)
 				}
 
 				logEntry.RackID, exists = targetConfig.Meta["rackID"]
 				if !exists {
-					e.config.Log.Error().Msg("Rack ARM ID is not set in the metadata of target: " + targetName)
-					return
+					e.config.Log.Debug().Msg("rack ARM ID is not set in the metadata of target: " + targetName)
 				}
 
 				logEntry.FabricID, exists = targetConfig.Meta["fabricID"]
 				if !exists {
-					e.config.Log.Error().Msg("Fabric ARM ID is not set in the metadata of target: " + targetName)
-					return
+					e.config.Log.Debug().Msg("fabric ARM ID is not set in the metadata of target: " + targetName)
 				}
 
 				logEntry.ExtensionID = e.config.Exporters.ExtensionArmId
+
+				logEntry.TenantID, exists = targetConfig.Meta["tenantID"]
+				if !exists {
+					e.config.Log.Debug().Msg("tenant ARM ID is not set in the metadata of target: " + targetName)
+				}
+
+				logEntry.Location, exists = targetConfig.Meta["location"]
+				if !exists {
+					e.config.Log.Debug().Msg("location is not set in the metadata of target: " + targetName)
+				}
 
 				// TODO: Handle possible duplicates
 				// Used for aditional metadata fields
 				for _, fieldName := range e.config.ExporterMetadataAllowlist {
 					fieldVal, exists := targetConfig.Meta[fieldName]
 					if exists {
-						logEntry.Meta[fieldName] = fieldVal
+						metaMap[fieldName] = fieldVal
 					}
 				}
 			} else {
-				e.config.Log.Error().Msg("Target config not found for target: " + logEntry.Meta["target"])
+				e.config.Log.Error().Msg("Target config not found for target: " + metaMap["target"])
 				return
 			}
 		}
@@ -156,6 +173,8 @@ func (e *FluentdExporter) Export(leaf *ctree.Leaf) {
 			e.config.Log.Info().Msg("Point event is empty. Returning.")
 			return
 		}
+
+		logEntry.Meta = mapToEscapedSortedString(metaMap)
 
 		// ns since epoch
 		logEntry.Timestamp = strconv.FormatInt(notification.Timestamp, 10)
@@ -232,5 +251,21 @@ func getPathWithKeys(path gnmipb.Path) string {
 			result += "[" + key + "=" + val + "]"
 		}
 	}
+	return result
+}
+
+func mapToEscapedSortedString(m map[string]string) string {
+	result := "{"
+	elems := []string{}
+
+	for k, v := range m {
+		elems = append(elems, "\""+k+"\":\""+v+"\"")
+	}
+
+	sort.Strings(elems)
+
+	result += strings.Join(elems, ",")
+	result += "}"
+
 	return result
 }

@@ -139,7 +139,7 @@ func (e *StatsdExporter) Export(leaf *ctree.Leaf) {
 			return
 		}
 
-		e.config.Log.Info().Msgf("%s:%d|g", string(metricJSON), metric.Value)
+		e.config.Log.Debug().Msgf("%s:%d|g", string(metricJSON), metric.Value)
 		if err := e.client.Gauge(string(metricJSON), metric.Value, 1); err != nil {
 			e.config.Log.Error().Msg(err.Error())
 		}
