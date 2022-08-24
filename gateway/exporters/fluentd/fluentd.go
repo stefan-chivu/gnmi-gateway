@@ -160,7 +160,7 @@ func (e *FluentdExporter) Export(leaf *ctree.Leaf) {
 		// ns since epoch
 		logEntry.Timestamp = strconv.FormatInt(notification.Timestamp, 10)
 
-		logEntry.Namespace = e.config.GetPathMetadata(notificationPath)["Namespace"]
+		logEntry.Namespace = e.config.GetPathMetadata(notificationPath)["logNamespace"]
 		if logEntry.Namespace == "" {
 			logEntry.Namespace = "Default"
 		}
