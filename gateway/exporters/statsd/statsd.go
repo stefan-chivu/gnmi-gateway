@@ -29,12 +29,7 @@ type Metric struct {
 	Measurement string            `json:"Metric"`
 	Namespace   string            `json:"Namespace"`
 	Dims        map[string]string `json:"Dims"`
-	Value       interface{}       `json:"-"`
-}
-
-type Point struct {
-	Tags   map[string]string
-	Fields map[string]interface{}
+	Value       int64             `json:"-"`
 }
 
 func init() {
@@ -61,33 +56,24 @@ func (e *StatsdExporter) Export(leaf *ctree.Leaf) {
 	notification := leaf.Value().(*gnmipb.Notification)
 
 	for _, update := range notification.Update {
-		point := Point{
-			Fields: make(map[string]interface{}),
+		notificationPath := utils.GetTrimmedPath(notification.Prefix, update.Path)
+
+		notificationType := e.config.GetPathMetadata(notificationPath)["type"]
+		e.config.Log.Debug().Msgf("Notification type: [ %s ]", notificationType)
+		if notificationType != "" && notificationType != MetricType && notificationType != LoggedMetricType {
+			continue
 		}
 
-		metric := Metric{}
-
-		timestamp := time.Unix(0, notification.Timestamp)
-		beforeLimit := (time.Now()).Add(-30 * time.Minute)
-		afterLimit := (time.Now()).Add(4 * time.Minute)
-		//TODO Check if Geneva has timestamp limitations
-
-		if timestamp.Before(beforeLimit) || timestamp.After(afterLimit) {
-			return
-		}
-
-		var name string
-
-		value, valid := utils.GetValues(update.Val)
-
+		value, valid := utils.GetNumberValues(update.Val)
 		if !valid {
 			continue
 		}
 
-		metric.Value = value
+		metric := Metric{}
 
-		path := utils.GetTrimmedPath(notification.Prefix, update.Path)
-		metric.Namespace = e.config.GetPathMetadata(path)["Namespace"]
+		metric.Value = int64(value)
+
+		metric.Namespace = e.config.GetPathMetadata(notificationPath)["metricNamespace"]
 		if metric.Namespace == "" {
 			metric.Namespace = "Default"
 		}
@@ -97,79 +83,65 @@ func (e *StatsdExporter) Export(leaf *ctree.Leaf) {
 			e.config.Log.Info().Msg(fmt.Sprintf("Failed to extract path or keys: %s", err))
 		}
 
-		name, elems = elems[len(elems)-1], elems[:len(elems)-1]
+		measurementPath := strings.Join(elems, "/")
 
-		if metric.Measurement == "" {
-			measurementPath := strings.Join(elems, "/")
+		p := notification.GetPrefix()
+		target := p.GetTarget()
+		origin := p.GetOrigin()
 
-			p := notification.GetPrefix()
-			target := p.GetTarget()
-			origin := p.GetOrigin()
-
-			keys["path"] = measurementPath
-			if origin != "" {
-				keys["origin"] = origin
-			}
-
-			if target != "" {
-				keys["target"] = target
-			}
-
-			metric.Measurement = pathToMetricName(measurementPath)
-
-			point.Tags = keys
-
-			if e.connMgr != nil {
-				targetConfig, found := (*e.connMgr).GetTargetConfig(point.Tags["target"])
-
-				if found {
-					for _, fieldName := range e.config.ExporterMetadataAllowlist {
-						fieldVal, exists := targetConfig.Meta[fieldName]
-						if exists {
-							point.Tags[fieldName] = fieldVal
-						}
-					}
-				} else {
-					e.config.Log.Error().Msg("Target config not found for target: " + point.Tags["target"])
-					return
-				}
-			}
+		keys["path"] = measurementPath
+		if origin != "" {
+			keys["origin"] = origin
 		}
 
-		point.Fields[pathToMetricName(name)] = value
+		if target != "" {
+			keys["target"] = target
+		}
+
+		metric.Measurement = pathToMetricName(measurementPath)
+
+		metric.Dims = keys
+
+		if e.connMgr != nil {
+			targetConfig, found := (*e.connMgr).GetTargetConfig(metric.Dims["target"])
+
+			if found {
+				for _, fieldName := range e.config.ExporterMetadataAllowlist {
+					fieldVal, exists := targetConfig.Meta[fieldName]
+					if exists {
+						metric.Dims[fieldName] = fieldVal
+					}
+				}
+			} else {
+				e.config.Log.Error().Msg("Target config not found for target: " + metric.Dims["target"])
+				return
+			}
+		}
 
 		if metric.Measurement == "" {
 			e.config.Log.Info().Msg("Point measurement is empty. Returning.")
 			return
 		}
 
-		metric.Dims = point.Tags
 		// ns since epoch
 		metric.Dims["timestamp"] = strconv.FormatInt(notification.Timestamp, 10)
 
-		notificationType := e.config.GetPathMetadata(path)["type"]
-		e.config.Log.Debug().Msgf("Notification type: [ %s ]", notificationType)
-		if notificationType == "" || notificationType == MetricType || notificationType == LoggedMetricType {
-			metric.Account = e.config.Exporters.GenevaMdmAccount
+		metric.Account = e.config.Exporters.GenevaMdmAccount
 
-			if resourceId := e.config.Exporters.ExtensionArmId; resourceId != "" {
-				metric.Dims["microsoft.resourceid"] = resourceId
-			}
+		if resourceId := e.config.Exporters.ExtensionArmId; resourceId != "" {
+			metric.Dims["microsoft.resourceid"] = resourceId
+		}
 
-			metricJSON, err := json.Marshal(metric)
+		metricJSON, err := json.Marshal(metric)
 
-			if err != nil {
-				e.config.Log.Error().Msg("Failed to marshal point into JSON")
-				return
-			}
+		if err != nil {
+			e.config.Log.Error().Msg("Failed to marshal metric into JSON")
+			return
+		}
 
-			val, isNumericValue := utils.GetNumberValues(update.Val)
-			if isNumericValue {
-				e.config.Log.Debug().Msgf("%s:%d|g", string(metricJSON), int64(val))
-				if err := e.client.Gauge(string(metricJSON), int64(val), 1); err != nil {
-					e.config.Log.Error().Msg(err.Error())
-				}
-			}
+		e.config.Log.Debug().Msgf("%s:%d|g", string(metricJSON), metric.Value)
+		if err := e.client.Gauge(string(metricJSON), metric.Value, 1); err != nil {
+			e.config.Log.Error().Msg(err.Error())
 		}
 	}
 }
@@ -182,22 +154,20 @@ func (e *StatsdExporter) Start(connMgr *connections.ConnectionManager) error {
 
 	var err error
 
-	// TODO: Resolve deprecated
-	e.client, err = statsd.NewBufferedClient(
-		e.config.Exporters.StatsdHost, "",
-		time.Duration(300)*time.Millisecond, // flush interval
-		0,                                   // flush size - default
-	)
+	clientConfig := statsd.ClientConfig{
+		Address:       e.config.Exporters.StatsdHost,
+		UseBuffered:   true,
+		FlushInterval: time.Duration(300) * time.Millisecond,
+		FlushBytes:    0,
+	}
+
+	e.client, err = statsd.NewClientWithConfig(&clientConfig)
 
 	if e.config.Exporters.GenevaMdmAccount == "" {
 		e.config.Log.Warn().Msg("geneva MDM account is not set in exporter; metrics will be discarded by the MDM agent")
 	}
 	if e.config.Exporters.ExtensionArmId == "" {
 		e.config.Log.Warn().Msg("extension ARM ID is not set in Geneva exporter; metrics will be discarded by the MDM agent")
-	}
-
-	if err != nil {
-		return err
 	}
 
 	return err
